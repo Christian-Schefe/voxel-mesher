@@ -113,11 +113,7 @@ pub fn generate_quads(geometry: &Geometry) -> Vec<Quad> {
     for (steps, origin, normal, dir1, dir2, offset) in slices {
         for n in 0..steps {
             let pos = origin + n * normal;
-            println!("{:?} {:?} {:?} {:?}", pos, dir1, dir2, normal);
             let quads_slice = generate_quads_slice(&geometry, pos, dir1, dir2, normal, offset);
-            for quad in quads_slice.iter() {
-                println!("q {:?}", quad.vertices);
-            }
             quads.extend(quads_slice);
         }
     }
@@ -160,7 +156,6 @@ fn generate_quads_slice(
                         s1 += 1;
                     }
                 }
-                println!("{} {}, {} {}", i, j, s2, s1);
 
                 let p1 = origin + i as i32 * dir1 + j as i32 * dir2 + geometry.min + offset;
                 let p2 = p1 + dir1 * s1 as i32;
@@ -227,6 +222,8 @@ pub enum GeometryObject {
     Minus(Box<GeometryObject>, Box<GeometryObject>),
     SymmetricDifference(Box<GeometryObject>, Box<GeometryObject>),
     Wireframe(Box<GeometryObject>),
+    Hull(Box<GeometryObject>),
+    Grow(Box<GeometryObject>),
 }
 
 impl GeometryObject {
@@ -265,24 +262,75 @@ impl GeometryObject {
             }
             GeometryObject::Wireframe(geometry_object) => {
                 let voxels = geometry_object.get_voxels();
-                let mut wireframe_voxels = HashSet::new();
+                let mut hull_voxels = HashSet::new();
                 for voxel in voxels.iter() {
-                    let mut empty_count = 0;
                     for x in -1..=1i32 {
                         for y in -1..=1i32 {
                             for z in -1..=1i32 {
                                 let neighbor = *voxel + IVec3::new(x, y, z);
                                 if !voxels.contains(&neighbor) {
-                                    empty_count += 1;
+                                    hull_voxels.insert(*voxel);
                                 }
                             }
                         }
                     }
-                    if empty_count > 9 || empty_count == 3 {
-                        wireframe_voxels.insert(*voxel);
+                }
+                let mut wireframe_voxels = HashSet::new();
+                for voxel in &hull_voxels {
+                    let mut dir_count = 0;
+                    let mut half_dir_count = 0;
+                    for dir in &[
+                        IVec3::new(1, 0, 0),
+                        IVec3::new(0, 1, 0),
+                        IVec3::new(0, 0, 1),
+                    ] {
+                        let neighbor1 = voxel + *dir;
+                        let neighbor2 = voxel - *dir;
+                        if hull_voxels.contains(&neighbor1) && hull_voxels.contains(&neighbor2) {
+                            dir_count += 1;
+                        } else if hull_voxels.contains(&neighbor1)
+                            || hull_voxels.contains(&neighbor2)
+                        {
+                            half_dir_count += 1;
+                        }
+                    }
+                    if dir_count < 2 || (dir_count == 2 && half_dir_count == 1) {
+                        wireframe_voxels.insert(voxel.clone());
                     }
                 }
                 wireframe_voxels
+            }
+            GeometryObject::Hull(geometry_object) => {
+                let voxels = geometry_object.get_voxels();
+                let mut hull_voxels = HashSet::new();
+                for voxel in voxels.iter() {
+                    for x in -1..=1i32 {
+                        for y in -1..=1i32 {
+                            for z in -1..=1i32 {
+                                let neighbor = *voxel + IVec3::new(x, y, z);
+                                if !voxels.contains(&neighbor) {
+                                    hull_voxels.insert(*voxel);
+                                }
+                            }
+                        }
+                    }
+                }
+                hull_voxels
+            }
+            GeometryObject::Grow(geometry_object) => {
+                let voxels = geometry_object.get_voxels();
+                let mut grown_voxels = HashSet::new();
+                for voxel in voxels.iter() {
+                    for x in -1..=1i32 {
+                        for y in -1..=1i32 {
+                            for z in -1..=1i32 {
+                                let neighbor = *voxel + IVec3::new(x, y, z);
+                                grown_voxels.insert(neighbor);
+                            }
+                        }
+                    }
+                }
+                grown_voxels
             }
         }
     }

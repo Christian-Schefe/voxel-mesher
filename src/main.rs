@@ -42,13 +42,17 @@ fn run() -> Result<()> {
         input,
         args.pattern
     );
-    let mut output = args.output;
+    let output = args.output;
     for file in &files {
-        if args.folder {
-            output = output.join(file.file_stem().ok_or(anyhow!("Invalid input"))?);
-            std::fs::create_dir(&output)?;
+        let out = if args.folder {
+            output.join(file.file_stem().ok_or(anyhow!("Invalid input"))?)
+        } else {
+            output.clone()
+        };
+        if !out.exists() {
+            std::fs::create_dir(&out)?;
         }
-        app(file, &output)?;
+        app(file, &out)?;
     }
     Ok(())
 }

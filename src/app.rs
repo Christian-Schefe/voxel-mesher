@@ -9,6 +9,7 @@ use crate::{
 };
 
 pub fn app(file: &PathBuf, output: &PathBuf) -> Result<()> {
+    println!("Processing file: {}", file.display());
     let content_str = std::fs::read_to_string(file)?;
     let content = parse_content(content_str)?;
     let geometry = convert_to_geometry(&content)?;
@@ -116,6 +117,14 @@ fn parse_geometry(content: &[char], index: &mut usize) -> Result<GeometryObject>
         'w' => {
             let obj = Box::new(parse_geometry(content, index)?);
             Ok(GeometryObject::Wireframe(obj))
+        }
+        'h' => {
+            let obj = Box::new(parse_geometry(content, index)?);
+            Ok(GeometryObject::Hull(obj))
+        }
+        'g' => {
+            let obj = Box::new(parse_geometry(content, index)?);
+            Ok(GeometryObject::Grow(obj))
         }
         _ => Err(anyhow!("Unexpected character: {}", c)),
     }?;
