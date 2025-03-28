@@ -20,6 +20,9 @@ struct Args {
 
     #[arg(short, long)]
     output: PathBuf,
+
+    #[arg(short, long, default_value = "true")]
+    folder: bool,
 }
 
 fn main() {
@@ -39,8 +42,12 @@ fn run() -> Result<()> {
         input,
         args.pattern
     );
-    let output = args.output;
+    let mut output = args.output;
     for file in &files {
+        if args.folder {
+            output = output.join(file.file_stem().ok_or(anyhow!("Invalid input"))?);
+            std::fs::create_dir(&output)?;
+        }
         app(file, &output)?;
     }
     Ok(())

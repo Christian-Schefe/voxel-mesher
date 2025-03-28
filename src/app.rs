@@ -1,22 +1,36 @@
-use anyhow::{Result, ensure};
-use bevy_math::{IVec2, IVec3};
+use anyhow::{Result, anyhow, ensure};
+use bevy_math::{IVec3, Vec3};
 use std::path::PathBuf;
 
-use crate::{geometry::Quad, obj::generate_obj_file};
+use crate::{
+    geometry::{GeometryObject, convert_to_geometry, generate_quads},
+    obj::{generate_mtl_file, generate_obj_file},
+    texture::{apply_uv_to_quads, create_texture_file, pack_quad_texture, sort_quads},
+};
 
 pub fn app(file: &PathBuf, output: &PathBuf) -> Result<()> {
     let content_str = std::fs::read_to_string(file)?;
     let content = parse_content(content_str)?;
-    let geometry = convert_to_geometry(content)?;
-    println!("{:?}", geometry);
-    let quads = generate_quads(&geometry);
-    for quad in quads.iter() {
-        println!("{:?}", quad);
-    }
+    let geometry = convert_to_geometry(&content)?;
 
-    let obj_file = generate_obj_file(geometry.resolution, quads);
-    let output_file = output.join(file.file_stem().unwrap()).with_extension("obj");
-    std::fs::write(output_file, obj_file)?;
+    let mut quads = generate_quads(&geometry);
+    sort_quads(&mut quads);
+
+    let (tex_quads, size) = pack_quad_texture(&quads);
+    apply_uv_to_quads(&mut quads, &tex_quads, size);
+
+    let texture_path = output.join(file.file_stem().unwrap()).with_extension("png");
+    let mtl_path = output.join(file.file_stem().unwrap()).with_extension("mtl");
+    let obj_path = output.join(file.file_stem().unwrap()).with_extension("obj");
+
+    let texture = create_texture_file(&tex_quads, size);
+    texture.save(&texture_path)?;
+
+    let obj_file = generate_obj_file(geometry.resolution, content.origin, quads, &mtl_path);
+    std::fs::write(obj_path, obj_file)?;
+
+    let mtl_file = generate_mtl_file(&texture_path);
+    std::fs::write(mtl_path, mtl_file)?;
     Ok(())
 }
 
@@ -38,25 +52,89 @@ fn parse_content(content: String) -> Result<FileContent> {
     let resolution = header_parts[0].parse::<i32>()?;
     ensure!(resolution > 0, "Invalid resolution");
 
-    let origin = parse_ivec3(header_parts[1].to_string())?;
-    let mut cubes = Vec::new();
-    for line in lines.iter().skip(1) {
-        let parts = line
-            .split(";")
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>();
-        ensure!(parts.len() == 2, "Expected 2 parts, got {}", parts.len());
-        let corner = parse_ivec3(parts[0].to_string())?;
-        let size = parse_ivec3(parts[1].to_string())?;
-        ensure!(size.x > 0 && size.y > 0 && size.z > 0, "Invalid size");
-        let cube = Cube { corner, size };
-        cubes.push(cube);
+    let origin = parse_vec3(header_parts[1].to_string())?;
+
+    let other_lines = lines.iter().skip(1);
+    let other_str = other_lines
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>()
+        .join("\n");
+    let mut index = 0;
+    let obj = parse_geometry(&other_str.chars().collect::<Vec<_>>(), &mut index)?;
+    if index != other_str.len() {
+        return Err(anyhow!("Found extra characters at the end of the file"));
     }
     Ok(FileContent {
         resolution,
         origin,
-        cubes,
+        obj,
     })
+}
+
+fn parse_geometry(content: &[char], index: &mut usize) -> Result<GeometryObject> {
+    while content.get(*index).is_some_and(|c| c.is_whitespace()) {
+        *index += 1;
+    }
+    let c = content
+        .get(*index)
+        .ok_or(anyhow!("Unexpected end of file"))?;
+    *index += 1;
+    let res = match c {
+        '(' => {
+            let mut i = *index;
+            while content.get(i).is_some_and(|c| *c != ')') {
+                i += 1;
+            }
+            if content.get(i).is_none() {
+                return Err(anyhow!("Expected ')'"));
+            }
+            let str = content[*index..i].iter().collect::<String>();
+            *index = i + 1;
+            let cube = parse_cube(&str)?;
+            Ok(GeometryObject::Cube(cube))
+        }
+        '&' => {
+            let left = Box::new(parse_geometry(content, index)?);
+            let right = Box::new(parse_geometry(content, index)?);
+            Ok(GeometryObject::Intersection(left, right))
+        }
+        '+' => {
+            let left = Box::new(parse_geometry(content, index)?);
+            let right = Box::new(parse_geometry(content, index)?);
+            Ok(GeometryObject::Union(left, right))
+        }
+        '-' => {
+            let left = Box::new(parse_geometry(content, index)?);
+            let right = Box::new(parse_geometry(content, index)?);
+            Ok(GeometryObject::Minus(left, right))
+        }
+        '/' => {
+            let left = Box::new(parse_geometry(content, index)?);
+            let right = Box::new(parse_geometry(content, index)?);
+            Ok(GeometryObject::SymmetricDifference(left, right))
+        }
+        'w' => {
+            let obj = Box::new(parse_geometry(content, index)?);
+            Ok(GeometryObject::Wireframe(obj))
+        }
+        _ => Err(anyhow!("Unexpected character: {}", c)),
+    }?;
+    while content.get(*index).is_some_and(|c| c.is_whitespace()) {
+        *index += 1;
+    }
+    Ok(res)
+}
+
+fn parse_cube(line: &str) -> Result<Cube> {
+    let parts = line
+        .split(";")
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    ensure!(parts.len() == 2, "Expected 2 parts, got {}", parts.len());
+    let corner = parse_ivec3(parts[0].to_string())?;
+    let size = parse_ivec3(parts[1].to_string())?;
+    ensure!(size.x > 0 && size.y > 0 && size.z > 0, "Invalid size");
+    Ok(Cube { corner, size })
 }
 
 fn parse_ivec3(str: String) -> Result<IVec3> {
@@ -68,215 +146,23 @@ fn parse_ivec3(str: String) -> Result<IVec3> {
     Ok(IVec3::new(parts[0], parts[1], parts[2]))
 }
 
-fn convert_to_geometry(content: FileContent) -> Result<Geometry> {
-    let mut voxels = Vec::new();
-    let mut min = IVec3::splat(i32::MAX);
-    let mut max = IVec3::splat(i32::MIN);
-    for cube in content.cubes {
-        let corner = cube.corner;
-        let size = cube.size;
-        for x in corner.x..corner.x + size.x {
-            for y in corner.y..corner.y + size.y {
-                for z in corner.z..corner.z + size.z {
-                    voxels.push(IVec3::new(x, y, z) - content.origin);
-                }
-            }
-        }
-        min = min.min(corner);
-        max = max.max(corner + size);
-    }
-    ensure!(!voxels.is_empty(), "No voxels found");
-    let size = max - min;
-    let mut grid = vec![vec![vec![false; size.z as usize]; size.y as usize]; size.x as usize];
-    for voxel in voxels.iter() {
-        let p = voxel - min;
-        grid[p.x as usize][p.y as usize][p.z as usize] = true;
-    }
-    Ok(Geometry {
-        resolution: content.resolution,
-        min,
-        size,
-        voxels: grid,
-    })
+fn parse_vec3(str: String) -> Result<Vec3> {
+    let parts = str
+        .split_whitespace()
+        .map(|s| s.trim().parse::<f32>())
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure!(parts.len() == 3, "Expected 3 parts, got {}", parts.len());
+    Ok(Vec3::new(parts[0], parts[1], parts[2]))
 }
-
-fn generate_quads(geometry: &Geometry) -> Vec<Quad> {
-    let mut quads = Vec::new();
-    let slices = vec![
-        (
-            geometry.size.x,
-            IVec3::new(0, 0, 0),
-            IVec3::new(1, 0, 0),
-            IVec3::new(0, 1, 0),
-            IVec3::new(0, 0, 1),
-            IVec3::new(1, 0, 0),
-        ),
-        (
-            geometry.size.x,
-            IVec3::new(geometry.size.x - 1, 0, geometry.size.z - 1),
-            IVec3::new(-1, 0, 0),
-            IVec3::new(0, 1, 0),
-            IVec3::new(0, 0, -1),
-            IVec3::new(0, 0, 1),
-        ),
-        (
-            geometry.size.y,
-            IVec3::new(0, 0, 0),
-            IVec3::new(0, 1, 0),
-            IVec3::new(0, 0, 1),
-            IVec3::new(1, 0, 0),
-            IVec3::new(0, 1, 0),
-        ),
-        (
-            geometry.size.y,
-            IVec3::new(
-                geometry.size.x - 1,
-                geometry.size.y - 1,
-                geometry.size.z - 1,
-            ),
-            IVec3::new(0, -1, 0),
-            IVec3::new(0, 0, -1),
-            IVec3::new(-1, 0, 0),
-            IVec3::new(1, 0, 1),
-        ),
-        (
-            geometry.size.z,
-            IVec3::new(geometry.size.x - 1, 0, 0),
-            IVec3::new(0, 0, 1),
-            IVec3::new(-1, 0, 0),
-            IVec3::new(0, 1, 0),
-            IVec3::new(1, 0, 1),
-        ),
-        (
-            geometry.size.z,
-            IVec3::new(0, 0, geometry.size.z - 1),
-            IVec3::new(0, 0, -1),
-            IVec3::new(1, 0, 0),
-            IVec3::new(0, 1, 0),
-            IVec3::new(0, 0, 0),
-        ),
-    ];
-    for (steps, origin, normal, dir1, dir2, offset) in slices {
-        for n in 0..steps {
-            let pos = origin + n * normal;
-            println!("{:?} {:?} {:?} {:?}", pos, dir1, dir2, normal);
-            let quads_slice = generate_quads_slice(&geometry, pos, dir1, dir2, normal, offset);
-            for quad in quads_slice.iter() {
-                println!("q {:?}", quad.vertices);
-            }
-            quads.extend(quads_slice);
-        }
-    }
-    quads
-}
-
-fn generate_quads_slice(
-    geometry: &Geometry,
-    origin: IVec3,
-    dir1: IVec3,
-    dir2: IVec3,
-    normal: IVec3,
-    offset: IVec3,
-) -> Vec<Quad> {
-    let mut mask = get_slice_mask(geometry, origin, dir1, dir2, normal);
-    let mut quads = Vec::new();
-
-    for i in 0..mask.len() {
-        let len = mask[i].len();
-        for j in 0..len {
-            if mask[i][j] {
-                let mut s1 = 1;
-                while j + s1 < len && mask[i][j + s1] {
-                    mask[i][j + s1] = false;
-                    s1 += 1;
-                }
-                let mut s2 = 1;
-                let mut done = false;
-                while !done {
-                    for k in 0..s1 {
-                        if i + s2 >= mask.len() || !mask[i + s2][j + k] {
-                            done = true;
-                            break;
-                        }
-                    }
-                    if !done {
-                        for k in 0..s1 {
-                            mask[i + s2][j + k] = false;
-                        }
-                        s2 += 1;
-                    }
-                }
-                println!("{} {}, {} {}", i, j, s1, s2);
-
-                let p1 = origin + i as i32 * dir1 + j as i32 * dir2 + geometry.min + offset;
-                let p2 = p1 + dir1 * s2 as i32;
-                let p3 = p2 + dir2 * s1 as i32;
-                let p4 = p1 + dir2 * s1 as i32;
-                quads.push(Quad::new(
-                    [p1, p2, p3, p4],
-                    IVec2::new(s2 as i32, s1 as i32),
-                ));
-            }
-        }
-    }
-
-    quads
-}
-
-fn get_slice_mask(
-    geometry: &Geometry,
-    origin: IVec3,
-    dir1: IVec3,
-    dir2: IVec3,
-    normal: IVec3,
-) -> Vec<Vec<bool>> {
-    let size1 = geometry.size.dot(IVec3::abs(dir1));
-    let size2 = geometry.size.dot(IVec3::abs(dir2));
-
-    let mut mask = vec![vec![false; size2 as usize]; size1 as usize];
-
-    let is_out_of_bounds = |pos: IVec3| -> bool {
-        pos.x < 0
-            || pos.y < 0
-            || pos.z < 0
-            || pos.x >= geometry.size.x
-            || pos.y >= geometry.size.y
-            || pos.z >= geometry.size.z
-    };
-
-    for i in 0..size1 {
-        for j in 0..size2 {
-            let pos = origin + i * dir1 + j * dir2;
-            let other_pos = pos + normal;
-            let has_block = geometry.voxels[pos.x as usize][pos.y as usize][pos.z as usize];
-            let other_has_no_block = is_out_of_bounds(other_pos)
-                || !geometry.voxels[other_pos.x as usize][other_pos.y as usize]
-                    [other_pos.z as usize];
-            let has_face = has_block && other_has_no_block;
-            mask[i as usize][j as usize] = has_face;
-        }
-    }
-
-    mask
+#[derive(Debug)]
+pub struct Cube {
+    pub corner: IVec3,
+    pub size: IVec3,
 }
 
 #[derive(Debug)]
-struct Geometry {
-    resolution: i32,
-    min: IVec3,
-    size: IVec3,
-    voxels: Vec<Vec<Vec<bool>>>,
-}
-
-#[derive(Debug)]
-struct FileContent {
-    resolution: i32,
-    origin: IVec3,
-    cubes: Vec<Cube>,
-}
-
-#[derive(Debug)]
-struct Cube {
-    corner: IVec3,
-    size: IVec3,
+pub struct FileContent {
+    pub resolution: i32,
+    pub origin: Vec3,
+    pub obj: GeometryObject,
 }

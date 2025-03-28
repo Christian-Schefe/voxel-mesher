@@ -8,3 +8,4 @@ anyhow = { version = "1.0.97", features = ["backtrace"] }
 bevy_math = "0.15.3"
 clap = { version = "4.5.32", features = ["derive"] }
 glob = "0.3.2"
+image = "0.25.6"

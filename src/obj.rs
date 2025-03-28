@@ -1,6 +1,15 @@
+use std::path::PathBuf;
+
+use bevy_math::Vec3;
+
 use crate::geometry::Quad;
 
-pub fn generate_obj_file(resolution: i32, quads: Vec<Quad>) -> String {
+pub fn generate_obj_file(
+    resolution: i32,
+    origin: Vec3,
+    quads: Vec<Quad>,
+    mtl_file_name: &PathBuf,
+) -> String {
     let mut vert_index = 1;
 
     let mut vertex_lines = Vec::new();
@@ -10,8 +19,8 @@ pub fn generate_obj_file(resolution: i32, quads: Vec<Quad>) -> String {
 
     for quad in quads {
         let mut face_line = "f".to_string();
-        for i in 0..4 {
-            let vertex = quad.vertices[i].as_vec3() / resolution as f32;
+        for i in [0, 3, 2, 1] {
+            let vertex = (quad.vertices[i].as_vec3() - origin) / resolution as f32;
             let normal = quad.normal;
             let uvs = quad.uvs[i];
 
@@ -31,6 +40,12 @@ pub fn generate_obj_file(resolution: i32, quads: Vec<Quad>) -> String {
     }
 
     let mut obj_lines = Vec::new();
+    obj_lines.push(format!(
+        "mtllib {}",
+        mtl_file_name.file_name().unwrap().to_str().unwrap()
+    ));
+    obj_lines.push("usemtl material".to_string());
+    obj_lines.push("o object".to_string());
     obj_lines.push("# Vertices".to_string());
     obj_lines.append(&mut vertex_lines);
     obj_lines.push("# Normals".to_string());
@@ -41,4 +56,18 @@ pub fn generate_obj_file(resolution: i32, quads: Vec<Quad>) -> String {
     obj_lines.append(&mut face_lines);
 
     obj_lines.join("\n")
+}
+
+pub fn generate_mtl_file(texture_file_name: &PathBuf) -> String {
+    format!(
+        r#"newmtl material
+Ka 0.2 0.2 0.2
+Kd 0.8 0.8 0.8
+Ks 1.0 1.0 1.0
+Ns 200
+map_Kd {}
+"#,
+        texture_file_name.file_name().unwrap().to_str().unwrap()
+    )
+    .to_string()
 }
