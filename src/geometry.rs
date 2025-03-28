@@ -16,11 +16,13 @@ pub struct Quad {
 impl Quad {
     pub fn new(vertices: [IVec3; 4], tex_size: (usize, usize)) -> Self {
         let normal = Self::get_normal(vertices);
+        let zero = 0.0;
+        let one = 1.0;
         let uvs = [
-            Vec2::new(0.0, 0.0),
-            Vec2::new(0.0, 1.0),
-            Vec2::new(1.0, 1.0),
-            Vec2::new(1.0, 0.0),
+            Vec2::new(zero, zero),
+            Vec2::new(zero, one),
+            Vec2::new(one, one),
+            Vec2::new(one, zero),
         ];
         Self {
             vertices,
